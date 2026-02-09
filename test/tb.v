@@ -24,33 +24,33 @@ module tb ();
   integer i;
   
   initial begin
-    $display("=== 6x6 Heat Solver Test ===");
+    $display("=== 5x5 Heat Solver Test ===");
     
     ena = 1; rst_n = 0; ui_in = 0; uio_in = 0;
     #50; rst_n = 1; #50;
     
-    // Config
-    ui_in = 8'b11_000000; uio_in = 8'b00000010;  // alpha=2
+    // Config alpha=2
+    ui_in = 8'b11_00_0000; uio_in = 8'b00000010;
     #20;
     
-    // Write hot spot at center (cells 14,15,20,21)
-    $display("Writing hot spot...");
-    ui_in = 8'b01_001110; uio_in = 8'b00001111; #20;  // Cell 14
-    ui_in = 8'b01_001111; uio_in = 8'b00001111; #20;  // Cell 15
-    ui_in = 8'b01_010100; uio_in = 8'b00001111; #20;  // Cell 20
-    ui_in = 8'b01_010101; uio_in = 8'b00001111; #20;  // Cell 21
+    // Write hot spot at center (cell 12 = 2,2)
+    $display("Writing hot spot at center...");
+    ui_in = 8'b01_0_01100; uio_in = 8'b00001111; #20;  // Cell 12
+    ui_in = 8'b01_0_01101; uio_in = 8'b00001111; #20;  // Cell 13
+    ui_in = 8'b01_0_10001; uio_in = 8'b00001111; #20;  // Cell 17
+    ui_in = 8'b01_0_10010; uio_in = 8'b00001111; #20;  // Cell 18
     
-    // Run
-    $display("Running 15 iterations...");
-    ui_in = 8'b00_000000;
-    #(36 * 20 * 15);  // 15 iterations
+    // Run 12 iterations
+    $display("Running simulation...");
+    ui_in = 8'b00_00_0000;
+    #(25 * 20 * 12);
     
     // Read center
-    ui_in = 8'b10_001110;
+    ui_in = 8'b10_0_01100;
     #40;
     $display("Center temp = %d", uio_out[3:0]);
     
-    $display("Complete!");
+    $display("Test complete!");
     #100; $finish;
   end
 endmodule
