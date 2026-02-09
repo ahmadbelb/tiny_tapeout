@@ -1,142 +1,113 @@
 /*
  * 5-Point Stencil Heat Equation Solver for Tiny Tapeout
- * Minimal version that fits on silicon
- * 8x8 grid = 64 cells, 4-bit temperatures
+ * Ultra-minimal: 4x4 grid, 3-bit temperatures
  * Copyright (c) 2024 Uri Shaked
  * SPDX-License-Identifier: Apache-2.0
  */
 `default_nettype none
 module tt_um_ahmadbelb_TUMVGA(
-  input  wire [7:0] ui_in,    // Control/Data inputs
-  output wire [7:0] uo_out,   // Data outputs
-  input  wire [7:0] uio_in,   // Bidirectional inputs
-  output wire [7:0] uio_out,  // Bidirectional outputs
-  output wire [7:0] uio_oe,   // Bidirectional enable
-  input  wire       ena,      
-  input  wire       clk,      
-  input  wire       rst_n     
+  input  wire [7:0] ui_in,
+  output wire [7:0] uo_out,
+  input  wire [7:0] uio_in,
+  output wire [7:0] uio_out,
+  output wire [7:0] uio_oe,
+  input  wire       ena,
+  input  wire       clk,
+  input  wire       rst_n
 );
 
-  // ========== CONTROL INTERFACE ==========
-  // ui_in[7:6] - Mode: 00=Run, 01=Write, 10=Read, 11=Config
-  // ui_in[5:0] - Address/Control
-  
+  // Control: ui_in[7:6]=mode, ui_in[3:0]=address
   wire [1:0] mode = ui_in[7:6];
-  wire [5:0] addr = ui_in[5:0];
+  wire [3:0] addr = ui_in[3:0];
   
   assign uio_oe = (mode == 2'b10) ? 8'hFF : 8'h00;
   
-  // ========== MINIMAL GRID (8x8, 4-bit temps) ==========
-  parameter GRID_SIZE = 64;  // 8x8 grid
+  // 4x4 grid, 3-bit temperatures (0-7) = 48 flip-flops total
+  reg [2:0] temp [0:15];
+  reg [3:0] cell_idx;
+  reg [1:0] alpha;
+  reg [2:0] boundary;
   
-  reg [5:0] cell_idx;
-  reg [3:0] temp [0:63];  // 64 cells × 4 bits = 256 flip-flops
-  reg [1:0] alpha;        // Diffusion: 00=0.125, 01=0.25, 10=0.5, 11=0.75
-  reg [3:0] boundary;     // Boundary temperature
-  reg [11:0] iterations;
+  // Current cell coords
+  wire [1:0] cx = cell_idx[1:0];
+  wire [1:0] cy = cell_idx[3:2];
   
-  // ========== COMPUTATION ==========
+  wire at_edge = (cx == 0) | (cx == 3) | (cy == 0) | (cy == 3);
   
-  wire [2:0] cx = cell_idx[2:0];  // x: 0-7
-  wire [2:0] cy = cell_idx[5:3];  // y: 0-7
+  // Neighbors (clamped at boundaries)
+  wire [1:0] left_x  = (cx == 0) ? cx : (cx - 1);
+  wire [1:0] right_x = (cx == 3) ? cx : (cx + 1);
+  wire [1:0] up_y    = (cy == 0) ? cy : (cy - 1);
+  wire [1:0] down_y  = (cy == 3) ? cy : (cy + 1);
   
-  wire at_edge = (cx == 0) | (cx == 7) | (cy == 0) | (cy == 7);
+  wire [3:0] addr_c = cell_idx;
+  wire [3:0] addr_l = {cy, left_x};
+  wire [3:0] addr_r = {cy, right_x};
+  wire [3:0] addr_u = {up_y, cx};
+  wire [3:0] addr_d = {down_y, cx};
   
-  wire [2:0] left_x  = (cx == 0) ? cx : (cx - 1);
-  wire [2:0] right_x = (cx == 7) ? cx : (cx + 1);
-  wire [2:0] up_y    = (cy == 0) ? cy : (cy - 1);
-  wire [2:0] down_y  = (cy == 7) ? cy : (cy + 1);
+  wire [2:0] T_c = temp[addr_c];
+  wire [2:0] T_l = temp[addr_l];
+  wire [2:0] T_r = temp[addr_r];
+  wire [2:0] T_u = temp[addr_u];
+  wire [2:0] T_d = temp[addr_d];
   
-  wire [5:0] addr_c = cell_idx;
-  wire [5:0] addr_l = {cy, left_x};
-  wire [5:0] addr_r = {cy, right_x};
-  wire [5:0] addr_u = {up_y, cx};
-  wire [5:0] addr_d = {down_y, cx};
+  // Average of 4 neighbors
+  wire [4:0] sum = {2'b0, T_l} + {2'b0, T_r} + {2'b0, T_u} + {2'b0, T_d};
+  wire [2:0] avg = sum[4:2];  // Divide by 4
   
-  wire [3:0] T_c = temp[addr_c];
-  wire [3:0] T_l = temp[addr_l];
-  wire [3:0] T_r = temp[addr_r];
-  wire [3:0] T_u = temp[addr_u];
-  wire [3:0] T_d = temp[addr_d];
+  // Weighted average based on alpha
+  wire [2:0] T_new = (alpha == 2'b00) ? T_c :                    // α=0 (no diffusion)
+                     (alpha == 2'b01) ? ((T_c + avg) >> 1) :     // α=0.5
+                     (alpha == 2'b10) ? (({1'b0, T_c} + {avg, 1'b0}) >> 2) : // α=0.75
+                                        avg;                      // α=1.0 (full diffusion)
   
-  // Simple averaging: (T_l + T_r + T_u + T_d) / 4
-  wire [5:0] sum = {2'b0, T_l} + {2'b0, T_r} + {2'b0, T_u} + {2'b0, T_d};
-  wire [3:0] avg = sum[5:2];  // Divide by 4
+  wire [2:0] T_final = at_edge ? boundary : T_new;
   
-  // Mix with center based on alpha
-  wire [3:0] T_new = (alpha == 2'b00) ? ((T_c * 7 + avg) >> 3) :      // 0.125
-                     (alpha == 2'b01) ? ((T_c * 3 + avg) >> 2) :      // 0.25
-                     (alpha == 2'b10) ? ((T_c + avg) >> 1) :          // 0.5
-                                        ((T_c + avg * 3) >> 2);       // 0.75
+  // Output
+  assign uo_out = {mode, 3'b0, temp[addr][2:0]};
+  assign uio_out = {5'b0, temp[addr]};
   
-  wire [3:0] T_final = at_edge ? boundary : T_new;
-  
-  // ========== OUTPUT ==========
-  reg [7:0] out_data;
-  
-  assign uo_out = out_data;
-  assign uio_out = {4'b0, temp[addr]};
-  
-  // ========== CONTROL ==========
-  
+  // Control logic
   integer i;
   
   always @(posedge clk) begin
     if (~rst_n) begin
       cell_idx <= 0;
-      iterations <= 0;
-      alpha <= 2'b01;      // Default α = 0.25
-      boundary <= 4'd0;    // Cold boundary
-      out_data <= 0;
+      alpha <= 2'b01;
+      boundary <= 3'd0;
       
-      for (i = 0; i < 64; i = i + 1) begin
-        temp[i] <= 4'd0;
+      for (i = 0; i < 16; i = i + 1) begin
+        temp[i] <= 3'd0;
       end
       
     end else begin
       
       case (mode)
-        
-        // Run simulation
-        2'b00: begin
+        2'b00: begin  // Run
           temp[addr_c] <= T_final;
-          
-          if (cell_idx < 63) begin
-            cell_idx <= cell_idx + 1;
+          cell_idx <= (cell_idx == 15) ? 0 : (cell_idx + 1);
+        end
+        
+        2'b01: begin  // Write
+          temp[addr] <= uio_in[2:0];
+        end
+        
+        2'b10: begin  // Read (output on uio_out)
+        end
+        
+        2'b11: begin  // Config
+          if (ui_in[4]) begin
+            boundary <= uio_in[2:0];
           end else begin
-            cell_idx <= 0;
-            iterations <= iterations + 1;
-          end
-          
-          out_data <= {2'b00, iterations[11:6]};
-        end
-        
-        // Write
-        2'b01: begin
-          temp[addr] <= uio_in[3:0];
-          out_data <= {2'b01, addr};
-        end
-        
-        // Read
-        2'b10: begin
-          out_data <= {2'b10, 2'b0, temp[addr]};
-        end
-        
-        // Config
-        2'b11: begin
-          if (addr[0] == 0) begin
             alpha <= uio_in[1:0];
-          end else begin
-            boundary <= uio_in[3:0];
           end
-          out_data <= {2'b11, 6'b0};
         end
-        
       endcase
       
     end
   end
   
-  wire _unused = &{ena, uio_in[7:4], addr[5:1]};
+  wire _unused = &{ena, ui_in[6:4], uio_in[7:3]};
   
 endmodule

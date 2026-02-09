@@ -26,34 +26,37 @@ module tb ();
   integer i;
   
   initial begin
-    $display("=== Tiny 5-Point Stencil Solver (8x8) ===");
+    $display("=== Mini 5-Point Stencil (4x4) ===");
     
     ena = 1; rst_n = 0; ui_in = 0; uio_in = 0;
     #50; rst_n = 1; #50;
     
-    // Config: alpha = 0.25
+    // Config: alpha = 0.5
     ui_in = 8'b11_000000; uio_in = 8'b00000001;
     #20;
     
-    // Write hot spot at center (4,4) = address 36
+    // Write hot spots at center cells (5,6,9,10)
     $display("Writing hot spot...");
-    for (i = 27; i < 45; i = i + 1) begin
-      ui_in = {2'b01, i[5:0]};
-      uio_in = 8'b00001111;  // Max temp (15)
-      #20;
-    end
+    ui_in = 8'b01_000101; uio_in = 8'b00000111;  // Cell 5 = 7
+    #20;
+    ui_in = 8'b01_000110; uio_in = 8'b00000111;  // Cell 6 = 7
+    #20;
+    ui_in = 8'b01_001001; uio_in = 8'b00000111;  // Cell 9 = 7
+    #20;
+    ui_in = 8'b01_001010; uio_in = 8'b00000111;  // Cell 10 = 7
+    #20;
     
-    // Run
-    $display("Running...");
+    // Run for 100 iterations
+    $display("Running simulation...");
     ui_in = 8'b00_000000;
-    #(64 * 20 * 5);  // 5 iterations
+    #(16 * 20 * 10);  // 10 full sweeps
     
     // Read center
-    ui_in = 8'b10_100100;  // Read addr 36
+    ui_in = 8'b10_000101;  // Read cell 5
     #40;
-    $display("Center = %d", uio_out[3:0]);
+    $display("Cell 5 temp = %d", uio_out[2:0]);
     
-    $display("Done!");
+    $display("Test complete!");
     #100; $finish;
   end
   
