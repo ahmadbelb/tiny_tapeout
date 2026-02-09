@@ -8,27 +8,16 @@ module tb ();
     #1;
   end
   
-  reg clk;
-  reg rst_n;
-  reg ena;
-  reg [7:0] ui_in;
-  reg [7:0] uio_in;
-  wire [7:0] uo_out;
-  wire [7:0] uio_out;
-  wire [7:0] uio_oe;
+  reg clk, rst_n, ena;
+  reg [7:0] ui_in, uio_in;
+  wire [7:0] uo_out, uio_out, uio_oe;
   
   tt_um_ahmadbelb_TUMVGA solver (
-      .ui_in  (ui_in),
-      .uo_out (uo_out),
-      .uio_in (uio_in),
-      .uio_out(uio_out),
-      .uio_oe (uio_oe),
-      .ena    (ena),
-      .clk    (clk),
-      .rst_n  (rst_n)
+      .ui_in(ui_in), .uo_out(uo_out),
+      .uio_in(uio_in), .uio_out(uio_out), .uio_oe(uio_oe),
+      .ena(ena), .clk(clk), .rst_n(rst_n)
   );
   
-  // Clock generation
   initial begin
     clk = 0;
     forever #10 clk = ~clk;
@@ -37,46 +26,35 @@ module tb ();
   integer i;
   
   initial begin
-    $display("=== 5-Point Stencil Heat Solver Test ===");
+    $display("=== Tiny 5-Point Stencil Solver (8x8) ===");
     
-    ena = 1;
-    rst_n = 0;
-    ui_in = 0;
-    uio_in = 0;
-    #50;
-    rst_n = 1;
-    #50;
+    ena = 1; rst_n = 0; ui_in = 0; uio_in = 0;
+    #50; rst_n = 1; #50;
     
-    // Configure: alpha = 64 (0.25)
-    $display("Configuring solver...");
-    ui_in = 8'b11_000000;
-    uio_in = 8'd64;
+    // Config: alpha = 0.25
+    ui_in = 8'b11_000000; uio_in = 8'b00000001;
     #20;
     
-    // Write hot spot at center (8,8) = address 136
-    $display("Writing initial condition...");
-    ui_in = 8'b01_000000;  // Write mode
-    
-    for (i = 120; i < 152; i = i + 1) begin
+    // Write hot spot at center (4,4) = address 36
+    $display("Writing hot spot...");
+    for (i = 27; i < 45; i = i + 1) begin
       ui_in = {2'b01, i[5:0]};
-      uio_in = 8'd255;
+      uio_in = 8'b00001111;  // Max temp (15)
       #20;
     end
     
-    // Run simulation
-    $display("Running simulation...");
+    // Run
+    $display("Running...");
     ui_in = 8'b00_000000;
-    #(256 * 20 * 10);  // 10 iterations
+    #(64 * 20 * 5);  // 5 iterations
     
     // Read center
-    $display("Reading results...");
-    ui_in = 8'b10_001000;  // Read address 136
+    ui_in = 8'b10_100100;  // Read addr 36
     #40;
-    $display("Center temp = %d", uio_out);
+    $display("Center = %d", uio_out[3:0]);
     
-    $display("Test complete!");
-    #100;
-    $finish;
+    $display("Done!");
+    #100; $finish;
   end
   
 endmodule

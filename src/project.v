@@ -1,6 +1,7 @@
 /*
  * 5-Point Stencil Heat Equation Solver for Tiny Tapeout
- * Pure computational engine without VGA dependency
+ * Minimal version that fits on silicon
+ * 8x8 grid = 64 cells, 4-bit temperatures
  * Copyright (c) 2024 Uri Shaked
  * SPDX-License-Identifier: Apache-2.0
  */
@@ -17,176 +18,118 @@ module tt_um_ahmadbelb_TUMVGA(
 );
 
   // ========== CONTROL INTERFACE ==========
-  // ui_in[7:6] - Mode selection
-  //   00: Run simulation
-  //   01: Write data (address in ui_in[5:0], data in uio_in)
-  //   10: Read data (address in ui_in[5:0], data out on uo_out)
-  //   11: Configure parameters
-  // ui_in[5:0] - Address/Control bits
+  // ui_in[7:6] - Mode: 00=Run, 01=Write, 10=Read, 11=Config
+  // ui_in[5:0] - Address/Control
   
   wire [1:0] mode = ui_in[7:6];
-  wire [5:0] control_bits = ui_in[5:0];
+  wire [5:0] addr = ui_in[5:0];
   
-  // Output enable: enable outputs when reading
   assign uio_oe = (mode == 2'b10) ? 8'hFF : 8'h00;
   
-  // ========== SOLVER PARAMETERS ==========
-  parameter GRID_WIDTH = 16;   // 16x16 grid = 256 cells
-  parameter GRID_HEIGHT = 16;
-  parameter GRID_SIZE = 256;
-  parameter ADDR_BITS = 8;
+  // ========== MINIMAL GRID (8x8, 4-bit temps) ==========
+  parameter GRID_SIZE = 64;  // 8x8 grid
   
-  // Simulation state
-  reg [7:0] current_cell;
-  reg solver_running;
-  reg [15:0] iteration_count;
+  reg [5:0] cell_idx;
+  reg [3:0] temp [0:63];  // 64 cells × 4 bits = 256 flip-flops
+  reg [1:0] alpha;        // Diffusion: 00=0.125, 01=0.25, 10=0.5, 11=0.75
+  reg [3:0] boundary;     // Boundary temperature
+  reg [11:0] iterations;
   
-  // Temperature storage
-  reg [7:0] temperature [0:255];
+  // ========== COMPUTATION ==========
   
-  // Configuration registers
-  reg [7:0] alpha;             // Diffusion coefficient (scaled 0-255)
-  reg [7:0] boundary_temp;     // Boundary temperature
-  reg [1:0] boundary_type;     // 00: Dirichlet, 01: Neumann, 10: Periodic
+  wire [2:0] cx = cell_idx[2:0];  // x: 0-7
+  wire [2:0] cy = cell_idx[5:3];  // y: 0-7
   
-  // I/O state
-  reg [7:0] read_address;
-  reg [7:0] write_address;
-  reg [7:0] data_out_reg;
+  wire at_edge = (cx == 0) | (cx == 7) | (cy == 0) | (cy == 7);
   
-  // ========== 5-POINT STENCIL COMPUTATION ==========
+  wire [2:0] left_x  = (cx == 0) ? cx : (cx - 1);
+  wire [2:0] right_x = (cx == 7) ? cx : (cx + 1);
+  wire [2:0] up_y    = (cy == 0) ? cy : (cy - 1);
+  wire [2:0] down_y  = (cy == 7) ? cy : (cy + 1);
   
-  // Current cell coordinates (x, y)
-  wire [3:0] cx = current_cell[3:0];   // x: 0-15
-  wire [3:0] cy = current_cell[7:4];   // y: 0-15
+  wire [5:0] addr_c = cell_idx;
+  wire [5:0] addr_l = {cy, left_x};
+  wire [5:0] addr_r = {cy, right_x};
+  wire [5:0] addr_u = {up_y, cx};
+  wire [5:0] addr_d = {down_y, cx};
   
-  // Check boundaries
-  wire at_left   = (cx == 0);
-  wire at_right  = (cx == 15);
-  wire at_top    = (cy == 0);
-  wire at_bottom = (cy == 15);
-  wire at_boundary = at_left | at_right | at_top | at_bottom;
+  wire [3:0] T_c = temp[addr_c];
+  wire [3:0] T_l = temp[addr_l];
+  wire [3:0] T_r = temp[addr_r];
+  wire [3:0] T_u = temp[addr_u];
+  wire [3:0] T_d = temp[addr_d];
   
-  // Neighbor coordinates with boundary handling
-  wire [3:0] left_x  = at_left  ? (boundary_type[1] ? 4'd15 : cx) : (cx - 1);
-  wire [3:0] right_x = at_right ? (boundary_type[1] ? 4'd0  : cx) : (cx + 1);
-  wire [3:0] up_y    = at_top   ? (boundary_type[1] ? 4'd15 : cy) : (cy - 1);
-  wire [3:0] down_y  = at_bottom? (boundary_type[1] ? 4'd0  : cy) : (cy + 1);
+  // Simple averaging: (T_l + T_r + T_u + T_d) / 4
+  wire [5:0] sum = {2'b0, T_l} + {2'b0, T_r} + {2'b0, T_u} + {2'b0, T_d};
+  wire [3:0] avg = sum[5:2];  // Divide by 4
   
-  // Neighbor addresses
-  wire [7:0] addr_center = current_cell;
-  wire [7:0] addr_left   = {cy, left_x};
-  wire [7:0] addr_right  = {cy, right_x};
-  wire [7:0] addr_up     = {up_y, cx};
-  wire [7:0] addr_down   = {down_y, cx};
+  // Mix with center based on alpha
+  wire [3:0] T_new = (alpha == 2'b00) ? ((T_c * 7 + avg) >> 3) :      // 0.125
+                     (alpha == 2'b01) ? ((T_c * 3 + avg) >> 2) :      // 0.25
+                     (alpha == 2'b10) ? ((T_c + avg) >> 1) :          // 0.5
+                                        ((T_c + avg * 3) >> 2);       // 0.75
   
-  // Read temperatures
-  wire [7:0] T_c = temperature[addr_center];
-  wire [7:0] T_l = temperature[addr_left];
-  wire [7:0] T_r = temperature[addr_right];
-  wire [7:0] T_u = temperature[addr_up];
-  wire [7:0] T_d = temperature[addr_down];
+  wire [3:0] T_final = at_edge ? boundary : T_new;
   
-  // Laplacian: ∇²T = (T_l + T_r + T_u + T_d - 4*T_c)
-  wire [9:0] sum_neighbors = {2'b0, T_l} + {2'b0, T_r} + {2'b0, T_u} + {2'b0, T_d};
-  wire [9:0] four_T_c = {T_c, 2'b0};
+  // ========== OUTPUT ==========
+  reg [7:0] out_data;
   
-  // Signed laplacian
-  wire signed [10:0] laplacian_signed = $signed({1'b0, sum_neighbors}) - $signed({1'b0, four_T_c});
+  assign uo_out = out_data;
+  assign uio_out = {4'b0, temp[addr]};
   
-  // Apply diffusion: T_new = T_c + (alpha/256) * laplacian / 4
-  wire signed [18:0] scaled_laplacian = (laplacian_signed * $signed({1'b0, alpha})) >>> 10;
-  wire signed [9:0] T_new_signed = $signed({2'b0, T_c}) + scaled_laplacian[9:0];
-  
-  // Clamp to [0, 255]
-  wire [7:0] T_computed = T_new_signed[9] ? 8'd0 :
-                          T_new_signed[8] ? 8'd255 :
-                          T_new_signed[7:0];
-  
-  // Apply boundary condition
-  wire is_dirichlet = (boundary_type == 2'b00) && at_boundary;
-  wire [7:0] T_new = is_dirichlet ? boundary_temp : T_computed;
-  
-  // ========== OUTPUT ASSIGNMENTS ==========
-  
-  // Status output on uo_out when not reading
-  assign uo_out = (mode == 2'b10) ? data_out_reg : 
-                  {solver_running, mode, 1'b0, iteration_count[11:8]};
-  
-  // Data output on bidirectional pins
-  assign uio_out = data_out_reg;
-  
-  // ========== MAIN CONTROL LOGIC ==========
+  // ========== CONTROL ==========
   
   integer i;
   
   always @(posedge clk) begin
     if (~rst_n) begin
-      // Reset
-      solver_running <= 0;
-      current_cell <= 0;
-      iteration_count <= 0;
-      read_address <= 0;
-      write_address <= 0;
-      data_out_reg <= 0;
+      cell_idx <= 0;
+      iterations <= 0;
+      alpha <= 2'b01;      // Default α = 0.25
+      boundary <= 4'd0;    // Cold boundary
+      out_data <= 0;
       
-      // Default configuration
-      alpha <= 8'd64;           // α = 0.25
-      boundary_temp <= 8'd0;    // Cold boundaries
-      boundary_type <= 2'b00;   // Dirichlet
-      
-      // Initialize grid to zero
-      for (i = 0; i < GRID_SIZE; i = i + 1) begin
-        temperature[i] <= 8'd0;
+      for (i = 0; i < 64; i = i + 1) begin
+        temp[i] <= 4'd0;
       end
       
     end else begin
       
       case (mode)
         
-        // MODE 00: Run simulation
+        // Run simulation
         2'b00: begin
-          solver_running <= 1;
+          temp[addr_c] <= T_final;
           
-          // Update one cell per clock cycle
-          temperature[addr_center] <= T_new;
-          
-          if (current_cell < GRID_SIZE - 1) begin
-            current_cell <= current_cell + 1;
+          if (cell_idx < 63) begin
+            cell_idx <= cell_idx + 1;
           end else begin
-            // Completed one full iteration
-            current_cell <= 0;
-            iteration_count <= iteration_count + 1;
+            cell_idx <= 0;
+            iterations <= iterations + 1;
           end
+          
+          out_data <= {2'b00, iterations[11:6]};
         end
         
-        // MODE 01: Write data
+        // Write
         2'b01: begin
-          solver_running <= 0;
-          write_address <= {2'b0, control_bits};
-          temperature[write_address] <= uio_in;
+          temp[addr] <= uio_in[3:0];
+          out_data <= {2'b01, addr};
         end
         
-        // MODE 10: Read data
+        // Read
         2'b10: begin
-          solver_running <= 0;
-          read_address <= {2'b0, control_bits};
-          data_out_reg <= temperature[read_address];
+          out_data <= {2'b10, 2'b0, temp[addr]};
         end
         
-        // MODE 11: Configure
+        // Config
         2'b11: begin
-          solver_running <= 0;
-          case (control_bits[1:0])
-            2'b00: alpha <= uio_in;
-            2'b01: boundary_temp <= uio_in;
-            2'b10: boundary_type <= uio_in[1:0];
-            2'b11: begin
-              // Reset iteration counter
-              iteration_count <= 0;
-              current_cell <= 0;
-            end
-          endcase
+          if (addr[0] == 0) begin
+            alpha <= uio_in[1:0];
+          end else begin
+            boundary <= uio_in[3:0];
+          end
+          out_data <= {2'b11, 6'b0};
         end
         
       endcase
@@ -194,7 +137,6 @@ module tt_um_ahmadbelb_TUMVGA(
     end
   end
   
-  // Suppress warnings
-  wire _unused = &{ena, control_bits[5:2]};
+  wire _unused = &{ena, uio_in[7:4], addr[5:1]};
   
 endmodule
