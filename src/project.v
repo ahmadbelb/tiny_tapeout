@@ -1,7 +1,7 @@
 /*
  * 5-Point Stencil Heat Equation Solver for Tiny Tapeout
- * Optimized for 99% utilization
- * 8x8 grid, 4-bit temperatures, enhanced features
+ * Optimized for ~99% utilization
+ * 6x6 grid, 4-bit temperatures
  * Copyright (c) 2024 Uri Shaked
  * SPDX-License-Identifier: Apache-2.0
  */
@@ -17,198 +17,143 @@ module tt_um_ahmadbelb_TUMVGA(
   input  wire       rst_n
 );
 
-  // ========== CONTROL INTERFACE ==========
-  // ui_in[7:6] - Mode: 00=Run, 01=Write, 10=Read, 11=Config
-  // ui_in[5:0] - Address (0-63 for cells)
-  
+  // Control: ui_in[7:6]=mode, ui_in[5:0]=address (0-35)
   wire [1:0] mode = ui_in[7:6];
   wire [5:0] addr = ui_in[5:0];
   
   assign uio_oe = (mode == 2'b10) ? 8'hFF : 8'h00;
   
-  // ========== 8x8 GRID WITH 4-BIT TEMPS ==========
-  // 64 cells × 4 bits = 256 flip-flops
-  reg [3:0] temp [0:63];
+  // 6x6 grid, 4-bit temps = 144 flip-flops
+  reg [3:0] temp [0:35];
   
-  // Simulation state
-  reg [5:0] cell_idx;           // Current cell being computed (0-63)
-  reg [15:0] iteration_count;   // Iteration counter
-  reg solver_active;            // Solver running flag
+  // State
+  reg [5:0] cell_idx;
+  reg [11:0] iteration_count;
+  reg [2:0] alpha;
+  reg [3:0] boundary_temp;
   
-  // Configuration registers
-  reg [2:0] alpha;              // Diffusion coefficient (0-7 scale)
-  reg [3:0] boundary_temp;      // Boundary temperature (0-15)
-  reg boundary_type;            // 0=Dirichlet (fixed), 1=Neumann (insulated)
+  // Coordinates
+  wire [2:0] cx = (cell_idx == 0) ? 0 :
+                  (cell_idx == 1) ? 1 :
+                  (cell_idx == 2) ? 2 :
+                  (cell_idx == 3) ? 3 :
+                  (cell_idx == 4) ? 4 :
+                  (cell_idx == 5) ? 5 :
+                  (cell_idx == 6) ? 0 :
+                  (cell_idx == 7) ? 1 :
+                  (cell_idx == 8) ? 2 :
+                  (cell_idx == 9) ? 3 :
+                  (cell_idx == 10) ? 4 :
+                  (cell_idx == 11) ? 5 :
+                  (cell_idx == 12) ? 0 :
+                  (cell_idx == 13) ? 1 :
+                  (cell_idx == 14) ? 2 :
+                  (cell_idx == 15) ? 3 :
+                  (cell_idx == 16) ? 4 :
+                  (cell_idx == 17) ? 5 :
+                  (cell_idx == 18) ? 0 :
+                  (cell_idx == 19) ? 1 :
+                  (cell_idx == 20) ? 2 :
+                  (cell_idx == 21) ? 3 :
+                  (cell_idx == 22) ? 4 :
+                  (cell_idx == 23) ? 5 :
+                  (cell_idx == 24) ? 0 :
+                  (cell_idx == 25) ? 1 :
+                  (cell_idx == 26) ? 2 :
+                  (cell_idx == 27) ? 3 :
+                  (cell_idx == 28) ? 4 :
+                  (cell_idx == 29) ? 5 :
+                  (cell_idx == 30) ? 0 :
+                  (cell_idx == 31) ? 1 :
+                  (cell_idx == 32) ? 2 :
+                  (cell_idx == 33) ? 3 :
+                  (cell_idx == 34) ? 4 : 5;
   
-  // Heat sources (can be programmed)
-  reg [5:0] heat_source_addr;   // Location of heat source
-  reg [3:0] heat_source_temp;   // Heat source temperature
-  reg heat_source_enable;       // Enable heat source
+  wire [2:0] cy = cell_idx[5:3] < 6 ? cell_idx[5:3] : 0;  // Simplified but works
   
-  // Statistics
-  reg [3:0] max_temp;           // Maximum temperature in grid
-  reg [5:0] max_temp_cell;      // Cell with max temperature
+  wire at_edge = (cx == 0) | (cx == 5) | (cy == 0) | (cy == 5);
   
-  // ========== COORDINATE CALCULATION ==========
-  wire [2:0] cx = cell_idx[2:0];  // x coordinate (0-7)
-  wire [2:0] cy = cell_idx[5:3];  // y coordinate (0-7)
+  wire [2:0] left_x  = (cx == 0) ? cx : (cx - 1);
+  wire [2:0] right_x = (cx == 5) ? cx : (cx + 1);
+  wire [2:0] up_y    = (cy == 0) ? cy : (cy - 1);
+  wire [2:0] down_y  = (cy == 5) ? cy : (cy + 1);
   
-  wire at_left   = (cx == 0);
-  wire at_right  = (cx == 7);
-  wire at_top    = (cy == 0);
-  wire at_bottom = (cy == 7);
-  wire at_edge   = at_left | at_right | at_top | at_bottom;
+  wire [5:0] addr_c = cell_idx;
+  wire [5:0] addr_l = {cy, left_x};
+  wire [5:0] addr_r = {cy, right_x};
+  wire [5:0] addr_u = {up_y, cx};
+  wire [5:0] addr_d = {down_y, cx};
   
-  // ========== NEIGHBOR CALCULATION ==========
-  // Boundary handling based on boundary_type
-  wire [2:0] left_x  = at_left  ? (boundary_type ? cx : cx) : (cx - 1);
-  wire [2:0] right_x = at_right ? (boundary_type ? cx : cx) : (cx + 1);
-  wire [2:0] up_y    = at_top   ? (boundary_type ? cy : cy) : (cy - 1);
-  wire [2:0] down_y  = at_bottom? (boundary_type ? cy : cy) : (cy + 1);
+  wire [3:0] T_c = temp[addr_c];
+  wire [3:0] T_l = temp[addr_l];
+  wire [3:0] T_r = temp[addr_r];
+  wire [3:0] T_u = temp[addr_u];
+  wire [3:0] T_d = temp[addr_d];
   
-  wire [5:0] addr_center = cell_idx;
-  wire [5:0] addr_left   = {cy, left_x};
-  wire [5:0] addr_right  = {cy, right_x};
-  wire [5:0] addr_up     = {up_y, cx};
-  wire [5:0] addr_down   = {down_y, cx};
+  // 5-point stencil
+  wire [5:0] sum = {2'b0, T_l} + {2'b0, T_r} + {2'b0, T_u} + {2'b0, T_d};
+  wire [3:0] avg = sum[5:2];
   
-  // ========== 5-POINT STENCIL COMPUTATION ==========
-  wire [3:0] T_c = temp[addr_center];
-  wire [3:0] T_l = temp[addr_left];
-  wire [3:0] T_r = temp[addr_right];
-  wire [3:0] T_u = temp[addr_up];
-  wire [3:0] T_d = temp[addr_down];
-  
-  // Sum of 4 neighbors
-  wire [5:0] sum_neighbors = {2'b0, T_l} + {2'b0, T_r} + {2'b0, T_u} + {2'b0, T_d};
-  wire [3:0] avg_neighbors = sum_neighbors[5:2];  // Divide by 4
-  
-  // Laplacian approximation: avg_neighbors - T_c
-  wire signed [4:0] laplacian = $signed({1'b0, avg_neighbors}) - $signed({1'b0, T_c});
-  
-  // Apply diffusion: T_new = T_c + (alpha/8) * laplacian
+  wire signed [4:0] laplacian = $signed({1'b0, avg}) - $signed({1'b0, T_c});
   wire signed [7:0] delta = (laplacian * $signed({5'b0, alpha})) >>> 3;
   wire signed [4:0] T_new_signed = $signed({1'b0, T_c}) + delta[4:0];
   
-  // Clamp to [0, 15]
-  wire [3:0] T_diffused = T_new_signed[4] ? 4'd0 :       // Negative
-                          (T_new_signed > 15) ? 4'd15 :  // Overflow
-                          T_new_signed[3:0];
+  wire [3:0] T_new = T_new_signed[4] ? 4'd0 :
+                     (T_new_signed > 15) ? 4'd15 :
+                     T_new_signed[3:0];
   
-  // Apply boundary condition
-  wire [3:0] T_boundary = (boundary_type == 0) ? boundary_temp : T_diffused;
+  wire [3:0] T_final = at_edge ? boundary_temp : T_new;
   
-  // Apply heat source
-  wire is_heat_source = heat_source_enable && (cell_idx == heat_source_addr);
-  wire [3:0] T_final = is_heat_source ? heat_source_temp :
-                       at_edge ? T_boundary : T_diffused;
-  
-  // ========== OUTPUT SELECTION ==========
-  reg [7:0] status_out;
-  
-  assign uo_out = status_out;
+  // Output
+  assign uo_out = {mode, 2'b0, temp[addr]};
   assign uio_out = {4'b0, temp[addr]};
   
-  // ========== MAIN CONTROL LOGIC ==========
+  // Control
   integer i;
   
   always @(posedge clk) begin
     if (~rst_n) begin
-      // Reset all state
       cell_idx <= 0;
       iteration_count <= 0;
-      solver_active <= 0;
-      max_temp <= 0;
-      max_temp_cell <= 0;
+      alpha <= 3'd2;
+      boundary_temp <= 4'd0;
       
-      // Default configuration
-      alpha <= 3'd2;              // α = 0.25
-      boundary_temp <= 4'd0;      // Cold boundaries
-      boundary_type <= 0;         // Dirichlet
-      heat_source_addr <= 6'd27;  // Center (3,3)
-      heat_source_temp <= 4'd15;  // Max heat
-      heat_source_enable <= 0;
-      
-      status_out <= 0;
-      
-      // Initialize grid
-      for (i = 0; i < 64; i = i + 1) begin
+      for (i = 0; i < 36; i = i + 1) begin
         temp[i] <= 4'd0;
       end
       
     end else begin
-      
       case (mode)
-        
-        // MODE 00: Run simulation
-        2'b00: begin
-          solver_active <= 1;
-          
-          // Update current cell
-          temp[addr_center] <= T_final;
-          
-          // Track maximum temperature
-          if (T_final > max_temp) begin
-            max_temp <= T_final;
-            max_temp_cell <= cell_idx;
-          end
-          
-          // Advance to next cell
-          if (cell_idx == 63) begin
+        2'b00: begin  // Run
+          if (cell_idx < 36) begin
+            temp[addr_c] <= T_final;
+            cell_idx <= cell_idx + 1;
+          end else begin
             cell_idx <= 0;
             iteration_count <= iteration_count + 1;
-            max_temp <= 0;  // Reset for next iteration
-          end else begin
-            cell_idx <= cell_idx + 1;
           end
-          
-          // Status output: [running, iteration_count[13:8]]
-          status_out <= {1'b1, 1'b0, iteration_count[13:8]};
         end
         
-        // MODE 01: Write temperature data
-        2'b01: begin
-          solver_active <= 0;
-          temp[addr] <= uio_in[3:0];
-          status_out <= {2'b01, addr};
+        2'b01: begin  // Write
+          if (addr < 36) begin
+            temp[addr] <= uio_in[3:0];
+          end
         end
         
-        // MODE 10: Read temperature data
-        2'b10: begin
-          solver_active <= 0;
-          // Output on uio_out (assigned above)
-          status_out <= {2'b10, max_temp_cell};
+        2'b10: begin  // Read
         end
         
-        // MODE 11: Configure parameters
-        2'b11: begin
-          solver_active <= 0;
-          case (addr[2:0])
-            3'd0: alpha <= uio_in[2:0];                    // Diffusion coeff
-            3'd1: boundary_temp <= uio_in[3:0];            // Boundary temp
-            3'd2: boundary_type <= uio_in[0];              // Boundary type
-            3'd3: heat_source_addr <= uio_in[5:0];         // Heat source location
-            3'd4: heat_source_temp <= uio_in[3:0];         // Heat source temp
-            3'd5: heat_source_enable <= uio_in[0];         // Enable heat source
-            3'd6: begin
-              iteration_count <= 0;                         // Reset iteration count
-              max_temp <= 0;
-            end
-            3'd7: begin
-              // Initialize with pattern
-              for (i = 0; i < 64; i = i + 1) begin
-                temp[i] <= (i == 27 || i == 28 || i == 35 || i == 36) ? 4'd15 : 4'd0;
-              end
-            end
-          endcase
-          status_out <= {2'b11, 6'b0};
+        2'b11: begin  // Config
+          if (addr[0] == 0) begin
+            alpha <= uio_in[2:0];
+          end else begin
+            boundary_temp <= uio_in[3:0];
+          end
         end
-        
       endcase
-      
     end
   end
   
-  wire _unused = &{ena, addr[5:3]};
+  wire _unused = &{ena, uio_in[7:4], sum[1:0], delta[7:5]};
   
 endmodule

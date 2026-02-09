@@ -24,32 +24,31 @@ module tb ();
   integer i;
   
   initial begin
-    $display("=== Enhanced 8x8 Heat Solver ===");
+    $display("=== 6x6 Heat Solver Test ===");
     
     ena = 1; rst_n = 0; ui_in = 0; uio_in = 0;
     #50; rst_n = 1; #50;
     
-    // Configure alpha = 0.25
-    ui_in = 8'b11_000000; uio_in = 8'b00000010;
+    // Config
+    ui_in = 8'b11_000000; uio_in = 8'b00000010;  // alpha=2
     #20;
     
-    // Enable heat source at center
-    ui_in = 8'b11_000101; uio_in = 8'b00000001;
-    #20;
+    // Write hot spot at center (cells 14,15,20,21)
+    $display("Writing hot spot...");
+    ui_in = 8'b01_001110; uio_in = 8'b00001111; #20;  // Cell 14
+    ui_in = 8'b01_001111; uio_in = 8'b00001111; #20;  // Cell 15
+    ui_in = 8'b01_010100; uio_in = 8'b00001111; #20;  // Cell 20
+    ui_in = 8'b01_010101; uio_in = 8'b00001111; #20;  // Cell 21
     
-    // Initialize with pattern
-    ui_in = 8'b11_000111; uio_in = 8'b00000001;
-    #20;
-    
-    // Run simulation
-    $display("Running...");
+    // Run
+    $display("Running 15 iterations...");
     ui_in = 8'b00_000000;
-    #(64 * 20 * 20);  // 20 iterations
+    #(36 * 20 * 15);  // 15 iterations
     
-    // Read max temp location
-    ui_in = 8'b10_000000;
+    // Read center
+    ui_in = 8'b10_001110;
     #40;
-    $display("Max temp at cell: %d", uo_out[5:0]);
+    $display("Center temp = %d", uio_out[3:0]);
     
     $display("Complete!");
     #100; $finish;
