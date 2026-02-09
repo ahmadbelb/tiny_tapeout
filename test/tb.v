@@ -18,46 +18,40 @@ module tb ();
       .ena(ena), .clk(clk), .rst_n(rst_n)
   );
   
-  initial begin
-    clk = 0;
-    forever #10 clk = ~clk;
-  end
+  initial clk = 0;
+  always #10 clk = ~clk;
   
   integer i;
   
   initial begin
-    $display("=== Mini 5-Point Stencil (4x4) ===");
+    $display("=== Enhanced 8x8 Heat Solver ===");
     
     ena = 1; rst_n = 0; ui_in = 0; uio_in = 0;
     #50; rst_n = 1; #50;
     
-    // Config: alpha = 0.5
-    ui_in = 8'b11_000000; uio_in = 8'b00000001;
+    // Configure alpha = 0.25
+    ui_in = 8'b11_000000; uio_in = 8'b00000010;
     #20;
     
-    // Write hot spots at center cells (5,6,9,10)
-    $display("Writing hot spot...");
-    ui_in = 8'b01_000101; uio_in = 8'b00000111;  // Cell 5 = 7
-    #20;
-    ui_in = 8'b01_000110; uio_in = 8'b00000111;  // Cell 6 = 7
-    #20;
-    ui_in = 8'b01_001001; uio_in = 8'b00000111;  // Cell 9 = 7
-    #20;
-    ui_in = 8'b01_001010; uio_in = 8'b00000111;  // Cell 10 = 7
+    // Enable heat source at center
+    ui_in = 8'b11_000101; uio_in = 8'b00000001;
     #20;
     
-    // Run for 100 iterations
-    $display("Running simulation...");
+    // Initialize with pattern
+    ui_in = 8'b11_000111; uio_in = 8'b00000001;
+    #20;
+    
+    // Run simulation
+    $display("Running...");
     ui_in = 8'b00_000000;
-    #(16 * 20 * 10);  // 10 full sweeps
+    #(64 * 20 * 20);  // 20 iterations
     
-    // Read center
-    ui_in = 8'b10_000101;  // Read cell 5
+    // Read max temp location
+    ui_in = 8'b10_000000;
     #40;
-    $display("Cell 5 temp = %d", uio_out[2:0]);
+    $display("Max temp at cell: %d", uo_out[5:0]);
     
-    $display("Test complete!");
+    $display("Complete!");
     #100; $finish;
   end
-  
 endmodule
