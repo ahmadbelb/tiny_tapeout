@@ -1,6 +1,6 @@
 /*
  * 5-Point Stencil Heat Equation Solver for Tiny Tapeout
- * Optimized: 5x5 grid, 4-bit temps, simplified logic
+ * Fixed: Proper signed arithmetic for heat diffusion
  * Copyright (c) 2024 Uri Shaked
  * SPDX-License-Identifier: Apache-2.0
  */
@@ -16,20 +16,18 @@ module tt_um_ahmadbelb_TUMVGA(
   input  wire       rst_n
 );
 
-  // Control
   wire [1:0] mode = ui_in[7:6];
-  wire [4:0] addr = ui_in[4:0];  // 0-24 for 5x5 grid
+  wire [4:0] addr = ui_in[4:0];
   
   assign uio_oe = (mode == 2'b10) ? 8'hFF : 8'h00;
   
-  // 5x5 grid = 25 cells × 4 bits = 100 flip-flops
+  // 5x5 grid = 100 FFs
   reg [3:0] temp [0:24];
-  
   reg [4:0] cell_idx;
   reg [2:0] alpha;
   reg [3:0] boundary_temp;
   
-  // Simple coordinate calculation: cell_idx = y*5 + x
+  // Coordinates
   wire [2:0] cx = (cell_idx < 5)  ? cell_idx[2:0] :
                   (cell_idx < 10) ? (cell_idx - 5) :
                   (cell_idx < 15) ? (cell_idx - 10) :
@@ -43,40 +41,47 @@ module tt_um_ahmadbelb_TUMVGA(
   
   wire at_edge = (cx == 0) | (cx == 4) | (cy == 0) | (cy == 4);
   
-  // Neighbor addresses (with clamping)
+  // Neighbor addresses
   wire [4:0] addr_c = cell_idx;
   wire [4:0] addr_l = (cx == 0) ? cell_idx : (cell_idx - 1);
   wire [4:0] addr_r = (cx == 4) ? cell_idx : (cell_idx + 1);
   wire [4:0] addr_u = (cy == 0) ? cell_idx : (cell_idx - 5);
   wire [4:0] addr_d = (cy == 4) ? cell_idx : (cell_idx + 5);
   
-  // Read temperatures
   wire [3:0] T_c = temp[addr_c];
   wire [3:0] T_l = temp[addr_l];
   wire [3:0] T_r = temp[addr_r];
   wire [3:0] T_u = temp[addr_u];
   wire [3:0] T_d = temp[addr_d];
   
-  // 5-point stencil computation
-  wire [5:0] sum = {2'b0, T_l} + {2'b0, T_r} + {2'b0, T_u} + {2'b0, T_d};
-  wire [3:0] avg = sum[5:2];
+  // ========== PROPER 5-POINT STENCIL ==========
+  // Average of 4 neighbors
+  wire [5:0] sum_neighbors = {2'b0, T_l} + {2'b0, T_r} + {2'b0, T_u} + {2'b0, T_d};
+  wire [3:0] avg_neighbors = sum_neighbors[5:2];  // Divide by 4
   
-  // Simple diffusion: T_new = (T_c + avg) / 2 when alpha=4
-  // Scale by alpha/8
-  wire [4:0] diff = {1'b0, avg} - {1'b0, T_c};
-  wire [7:0] scaled_diff = diff * alpha;
-  wire [3:0] delta = scaled_diff[6:3];  // Divide by 8
+  // Laplacian: diff = avg - T_c (SIGNED)
+  wire signed [4:0] laplacian = $signed({1'b0, avg_neighbors}) - $signed({1'b0, T_c});
   
-  wire [4:0] T_sum = {1'b0, T_c} + {1'b0, delta};
-  wire [3:0] T_new = T_sum[4] ? 4'd15 : T_sum[3:0];
+  // Scale by alpha and divide by 8: delta = alpha * laplacian / 8
+  wire signed [7:0] delta_scaled = laplacian * $signed({5'b0, alpha});
+  wire signed [4:0] delta = delta_scaled[7:3];  // Arithmetic right shift by 3 (divide by 8)
   
-  wire [3:0] T_final = at_edge ? boundary_temp : T_new;
+  // Update: T_new = T_c + delta
+  wire signed [5:0] T_new_signed = $signed({2'b0, T_c}) + delta;
+  
+  // Clamp to [0, 15]
+  wire [3:0] T_clamped = (T_new_signed < 0) ? 4'd0 :
+                         (T_new_signed > 15) ? 4'd15 :
+                         T_new_signed[3:0];
+  
+  // Apply boundary condition
+  wire [3:0] T_final = at_edge ? boundary_temp : T_clamped;
   
   // Outputs
   assign uo_out = {mode, 2'b0, temp[addr]};
   assign uio_out = {4'b0, temp[addr]};
   
-  // Control logic
+  // Control
   integer i;
   
   always @(posedge clk) begin
@@ -92,7 +97,7 @@ module tt_um_ahmadbelb_TUMVGA(
     end else begin
       
       case (mode)
-        2'b00: begin  // Run
+        2'b00: begin  // Run simulation
           temp[addr_c] <= T_final;
           cell_idx <= (cell_idx == 24) ? 0 : (cell_idx + 1);
         end
@@ -104,6 +109,7 @@ module tt_um_ahmadbelb_TUMVGA(
         end
         
         2'b10: begin  // Read
+          // Data output happens via assign
         end
         
         2'b11: begin  // Config
@@ -118,6 +124,6 @@ module tt_um_ahmadbelb_TUMVGA(
     end
   end
   
-  wire _unused = &{ena, ui_in[6:5], uio_in[7:4], sum[1:0]};
+  wire _unused = &{ena, ui_in[6:5], uio_in[7:4], sum_neighbors[1:0]};
   
 endmodule
