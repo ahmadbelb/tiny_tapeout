@@ -21,36 +21,55 @@ module tb ();
   initial clk = 0;
   always #10 clk = ~clk;
   
-  integer i;
+  reg [3:0] readback;
   
   initial begin
-    $display("=== 5x5 Heat Solver Test ===");
+    $display("=== 5x5 Heat Solver Debug Test ===");
     
     ena = 1; rst_n = 0; ui_in = 0; uio_in = 0;
-    #50; rst_n = 1; #50;
+    #100; rst_n = 1; #100;
+    $display("[RESET] Complete");
     
-    // Config alpha=2
-    ui_in = 8'b11_00_0000; uio_in = 8'b00000010;
-    #20;
+    // Write cell 12 = 10
+    ui_in = {2'b01, 6'd12}; uio_in = 8'd10;
+    #100;
+    $display("[WRITE] Cell 12 = 10");
     
-    // Write hot spot at center (cell 12 = 2,2)
-    $display("Writing hot spot at center...");
-    ui_in = 8'b01_0_01100; uio_in = 8'b00001111; #20;  // Cell 12
-    ui_in = 8'b01_0_01101; uio_in = 8'b00001111; #20;  // Cell 13
-    ui_in = 8'b01_0_10001; uio_in = 8'b00001111; #20;  // Cell 17
-    ui_in = 8'b01_0_10010; uio_in = 8'b00001111; #20;  // Cell 18
+    // Read back immediately
+    ui_in = {2'b10, 6'd12}; 
+    #100;
+    readback = uio_out[3:0];
+    $display("[READ] Cell 12 = %d (expected 10)", readback);
     
-    // Run 12 iterations
-    $display("Running simulation...");
-    ui_in = 8'b00_00_0000;
-    #(25 * 20 * 12);
+    if (readback != 10) begin
+      $display("ERROR: Write/Read failed!");
+      $finish;
+    end
     
-    // Read center
-    ui_in = 8'b10_0_01100;
-    #40;
-    $display("Center temp = %d", uio_out[3:0]);
+    // Write cell 13 = 12
+    ui_in = {2'b01, 6'd13}; uio_in = 8'd12;
+    #100;
     
-    $display("Test complete!");
+    // Run 3 iterations
+    $display("[RUN] Starting 3 iterations...");
+    ui_in = {2'b00, 6'd0};
+    #(25 * 20 * 3);
+    
+    // Read results
+    ui_in = {2'b10, 6'd12};
+    #100;
+    readback = uio_out[3:0];
+    $display("[RESULT] Cell 12 after 3 iter = %d", readback);
+    
+    ui_in = {2'b10, 6'd7};
+    #100;
+    $display("[RESULT] Cell 7 (neighbor) = %d", uio_out[3:0]);
+    
+    ui_in = {2'b10, 6'd0};
+    #100;
+    $display("[RESULT] Cell 0 (edge) = %d", uio_out[3:0]);
+    
+    $display("=== Test Complete ===");
     #100; $finish;
   end
 endmodule
